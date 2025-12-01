@@ -1,197 +1,258 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import numpy as np
 
-# --- Configuração ---
-st.set_page_config(page_title="CRI Rating Pro", page_icon="🏗️", layout="wide")
+# --- Configurações Iniciais ---
+st.set_page_config(page_title="CRI Rating Enterprise", page_icon="🏢", layout="wide")
 
-# CSS para deixar a tabela de sensibilidade bonita
+# CSS Customizado
 st.markdown("""
 <style>
-    div[data-testid="stMetricValue"] {font-size: 1.8rem;}
-    .stAlert {padding: 0.5rem;}
+    .header-style {font-size:20px; font-weight:bold; color:#1f77b4;}
+    .sub-header {font-size:16px; font-weight:bold; color:#555;}
+    .metric-box {border: 1px solid #e6e6e6; padding: 15px; border-radius: 5px; text-align: center;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- Lógica Avançada de Cálculo ---
-def calcular_rating_avancado(dados):
-    score = 0
-    penalidades = 0
+# --- Funções Auxiliares de Pontuação ---
+def map_qualitativo(valor, opcoes, scores):
+    """Mapeia uma escolha textual para um score numérico."""
+    try:
+        index = opcoes.index(valor)
+        return scores[index]
+    except:
+        return 0
+
+def calcular_rating_final(scores_dict):
+    """Calcula o rating final ponderado."""
+    # Pesos Sugeridos (Total 100%)
+    pesos = {
+        'governanca': 10,
+        'historico': 10,
+        'financeiro': 15,
+        'ativo_especifico': 20, # O peso mais alto é o risco do projeto/carteira
+        'estrutura_capital': 5,
+        'reforco': 5,
+        'garantias': 15,
+        'conflitos': 5,
+        'prestadores': 5,
+        'contratual': 10
+    }
     
-    # --- 1. Lastro e Garantias (Máx 50 pts) ---
-    # LTV Stress (Venda Forçada)
-    ltv_stress = dados['ltv_stress']
-    if ltv_stress < 40: score += 20
-    elif ltv_stress < 60: score += 15
-    elif ltv_stress < 75: score += 10
-    else: penalidades += 5 # LTV muito alto no stress é perigoso
-
-    # Liquidez do Ativo (Localização/Tipologia)
-    score += dados['score_liquidez'] # 0 a 15 pts
-    
-    # Estágio de Obra (Risco de Performance)
-    if dados['tipo_risco'] == "Performance (Obras)":
-        if dados['poc'] > 90: score += 15
-        elif dados['poc'] > 50: score += 10
-        elif dados['poc'] > 20: score += 5
-        else: penalidades += 5 # Obra no início
-    else:
-        score += 15 # Imóvel performado/Corporativo é menos arriscado que obra
-
-    # --- 2. Capacidade de Pagamento (Máx 30 pts) ---
-    # ICSD (Índice de Cobertura)
-    if dados['icsd'] > 1.5: score += 15
-    elif dados['icsd'] > 1.2: score += 10
-    elif dados['icsd'] >= 1.0: score += 5
-    else: penalidades += 10 # ICSD < 1 é calote técnico
-
-    # Razão de Garantia (Fundo de Reserva)
-    if dados['pmts_reserva'] >= 3: score += 15
-    elif dados['pmts_reserva'] >= 1: score += 10
-    else: score += 0
-
-    # --- 3. Qualitativo e Sponsor (Máx 20 pts) ---
-    score += dados['score_sponsor'] # 0 a 20
-
-    # Cálculo Final
-    final_score = max(0, min(100, score - penalidades))
-    return final_score
+    score_total = sum([scores_dict[k] * (pesos[k]/100) for k in pesos])
+    return score_total
 
 def get_grade(score):
-    if score >= 90: return "AAA (Excel)", "#2E8B57"
-    elif score >= 80: return "AA (Muito Bom)", "#3CB371"
-    elif score >= 70: return "A (Bom)", "#9ACD32"
-    elif score >= 60: return "BBB (Adequado)", "#FFD700"
-    elif score >= 40: return "BB (Especulativo)", "#FFA500"
-    else: return "C/D (Risco Alto)", "#FF4500"
+    if score >= 90: return "AAA", "#1f77b4" # Azul
+    elif score >= 80: return "AA", "#2ca02c"  # Verde
+    elif score >= 70: return "A", "#98df8a"   # Verde Claro
+    elif score >= 60: return "BBB", "#ff7f0e" # Laranja
+    elif score >= 50: return "BB", "#ffbb78"  # Laranja Claro
+    elif score >= 40: return "B", "#d62728"   # Vermelho
+    else: return "C/D", "#8c564b" # Marrom
 
-# --- Interface ---
-st.title("🏗️ CRI Analyst Pro: Ferramenta de Análise Estruturada")
+# --- Interface Principal ---
 
-col_head1, col_head2 = st.columns([3,1])
-with col_head1:
-    st.markdown("**Objetivo:** Simulação de cenários e rating preliminar para operações imobiliárias (Corporativo ou Pulverizado).")
-with col_head2:
-    tipo_operacao = st.selectbox("Tipo de Risco", ["Corporativo (Aluguel/BTS)", "Desenvolvimento (Incorporação/Loteamento)"])
+st.title("🏢 Sistema de Rating de Crédito Estruturado (CRI)")
+st.markdown("**Metodologia 10-Pontos:** Análise Institucional, Financeira e Estrutural.")
 
-st.divider()
-
-# --- INPUTS (Organizados em Colunas para densidade de informação) ---
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.subheader("1. Garantias & Ativo")
-    valor_emissao = st.number_input("Valor da Emissão (R$ MM)", value=50.0)
-    valor_garantia = st.number_input("Valor de Avaliação (Laudo) (R$ MM)", value=80.0)
-    haircut = st.slider("Haircut Forçado (%) - Cenário de Liquidação", 0, 50, 20, help="Desconto aplicado ao valor do imóvel para simular venda rápida.")
-    
-    val_garantia_stress = valor_garantia * (1 - (haircut/100))
-    ltv_stress = (valor_emissao / val_garantia_stress) * 100 if val_garantia_stress > 0 else 0
-    
-    st.metric("LTV Stress (Venda Forçada)", f"{ltv_stress:.1f}%", delta=f"-{haircut}% no valor do ativo", delta_color="inverse")
-    
-    liquidez = st.select_slider("Liquidez do Ativo (Localização/Classe)", 
-                                options=["Baixa (Terciária)", "Média", "Alta (Prime)"], value="Média")
-    score_liquidez_map = {"Baixa (Terciária)": 5, "Média": 10, "Alta (Prime)": 15}
-
-with col2:
-    st.subheader("2. Fluxo e Obras")
-    if tipo_operacao == "Desenvolvimento (Incorporação/Loteamento)":
-        poc = st.slider("POC (Percentual de Obra Concluída)", 0, 100, 30)
-        vendas = st.slider("Velocidade de Vendas (% Vendido)", 0, 100, 40)
-        tipo_risco_interno = "Performance (Obras)"
-    else:
-        st.info("Operação de Renda/Corporativo: Risco focado em Vacância e Crédito do Locatário.")
-        poc = 100
-        tipo_risco_interno = "Corporativo"
-        
-    receita_op = st.number_input("NOI / EBITDA Projetado (Ano) (R$ MM)", value=12.0)
-    servico_divida = st.number_input("Serviço da Dívida (PMT Ano) (R$ MM)", value=8.0)
-    
-    icsd = receita_op / servico_divida if servico_divida > 0 else 0
-    st.metric("ICSD (Cobertura Atual)", f"{icsd:.2f}x")
-    
-    pmts_reserva = st.number_input("Fundo de Reserva (nº de PMTs)", 0, 12, 3)
-
-with col3:
-    st.subheader("3. Sponsor & Quali")
-    track_record = st.selectbox("Track Record do Emissor", ["Novo no Mercado", "Histórico com Soluços", "Bom Histórico", "Tier 1 / Listado"])
-    gov_corp = st.radio("Governança", ["Familiar/Baixa", "Auditada/Profissional"])
-    
-    score_sponsor = 0
-    if track_record == "Tier 1 / Listado": score_sponsor += 15
-    elif track_record == "Bom Histórico": score_sponsor += 10
-    
-    if gov_corp == "Auditada/Profissional": score_sponsor += 5
-
-# --- CÁLCULO CENTRAL ---
-dados_calculo = {
-    'ltv_stress': ltv_stress,
-    'score_liquidez': score_liquidez_map[liquidez],
-    'tipo_risco': tipo_risco_interno,
-    'poc': poc,
-    'icsd': icsd,
-    'pmts_reserva': pmts_reserva,
-    'score_sponsor': score_sponsor
-}
-
-score_final = calcular_rating_avancado(dados_calculo)
-rating_txt, color_hex = get_grade(score_final)
-
-st.divider()
-
-# --- DASHBOARD DE RESULTADOS E STRESS ---
-st.subheader("🎯 Resultado e Análise de Sensibilidade")
-
-c_res1, c_res2 = st.columns([1, 2])
-
-with c_res1:
-    st.markdown(f"""
-    <div style="background-color: {color_hex}20; padding: 20px; border-radius: 15px; border: 2px solid {color_hex}; text-align: center;">
-        <h4 style="color: {color_hex}; margin:0;">Rating Estimado</h4>
-        <h1 style="font-size: 60px; margin:0; color: {color_hex};">{rating_txt.split()[0]}</h1>
-        <p><b>{rating_txt.split()[1]}</b> (Score: {score_final})</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if score_final < 60:
-        st.warning("⚠️ Atenção: Operação com riscos estruturais relevantes.")
-
-with c_res2:
-    # Tabela de Sensibilidade (O "Pulo do Gato" para analistas)
-    st.markdown("#### 📉 Teste de Estresse do Fluxo (Impacto no ICSD)")
-    st.caption("Como a cobertura da dívida se comporta se a Receita cair ou a Despesa/Juros subir?")
-    
-    # Criando cenários
-    cenarios = [-20, -10, 0, 10, 20] # Variação na Receita
-    icsd_stress = []
-    
-    for c in cenarios:
-        receita_stress = receita_op * (1 + (c/100))
-        res = receita_stress / servico_divida if servico_divida > 0 else 0
-        icsd_stress.append(res)
-        
-    df_stress = pd.DataFrame({
-        "Variação NOI": [f"{x}%" for x in cenarios],
-        "NOI Estressado (MM)": [f"R$ {receita_op * (1 + x/100):.1f}" for x in cenarios],
-        "ICSD Resultante": icsd_stress
-    })
-    
-    # Formatação condicional simples no Pandas para Streamlit
-    def color_icsd(val):
-        color = 'red' if val < 1.0 else ('orange' if val < 1.2 else 'green')
-        return f'color: {color}; font-weight: bold'
-
-    st.dataframe(
-        df_stress.style.applymap(color_icsd, subset=['ICSD Resultante'])
-                 .format({"ICSD Resultante": "{:.2f}x"}),
-        use_container_width=True,
-        hide_index=True
+# --- Sidebar: Definição do Tipo de Análise ---
+with st.sidebar:
+    st.header("Configuração da Operação")
+    nome_emissor = st.text_input("Emissor/Devedor", "Empresa Exemplo S.A.")
+    tipo_ativo = st.selectbox(
+        "Natureza do Risco (Pilar 4)", 
+        ["Desenvolvimento Imobiliário (Projeto)", "Carteira de Recebíveis (Pulverizado)"]
     )
+    st.divider()
+    st.info("Preencha as 3 abas principais para gerar o relatório.")
+
+# --- ABAS DE INPUTS ---
+tab_inst, tab_fin, tab_estrut, tab_res = st.tabs([
+    "🏛️ 1. Institucional & Sponsor", 
+    "📈 2. Financeiro & Ativo", 
+    "🧱 3. Estrutura & Garantias", 
+    "🎯 Resultado"
+])
+
+# Dicionário para guardar os scores parciais (0-100)
+scores = {}
+
+# --- ABA 1: Institucional, Histórico, Conflitos e Prestadores ---
+with tab_inst:
+    col1, col2 = st.columns(2)
     
-    if icsd_stress[1] < 1.0: # Se cair 10% e quebrar
-        st.error("🚨 ALERTA: Uma queda de 10% no NOI compromete o pagamento da dívida.")
-    elif icsd_stress[0] < 1.0:
-        st.warning("⚠️ Cuidado: O projeto não aguenta desaforo de 20% na receita.")
-    else:
-        st.success("✅ Resiliente: O projeto suporta queda de 20% no NOI e mantém ICSD > 1.0x")
+    with col1:
+        st.markdown('<p class="header-style">1. Governança e Reputação</p>', unsafe_allow_html=True)
+        audit_opt = ["Sem auditoria/Local", "Big 4 / Top Tier", "Auditado (Mid-tier)"]
+        audit_val = st.selectbox("Qualidade da Auditoria & Compliance", audit_opt)
+        score_gov = map_qualitativo(audit_val, audit_opt, [20, 100, 70])
+        
+        esg_opt = ["Riscos Relevantes", "Neutro", "Políticas Claras/Certificado"]
+        esg_val = st.select_slider("Fatores ESG & Litígios", options=esg_opt)
+        score_gov = (score_gov + map_qualitativo(esg_val, esg_opt, [0, 50, 100])) / 2
+        scores['governanca'] = score_gov
+
+        st.markdown('<p class="header-style">2. Histórico Operacional</p>', unsafe_allow_html=True)
+        track_opt = ["Iniciante/Problemas", "Histórico Mediano", "Track Record Comprovado"]
+        track_val = st.select_slider("Experiência e Entregas", options=track_opt)
+        scores['historico'] = map_qualitativo(track_val, track_opt, [30, 70, 100])
+
+    with col2:
+        st.markdown('<p class="header-style">8. Conflitos de Interesse</p>', unsafe_allow_html=True)
+        skin_opt = ["Retenção Baixa/Nula", "Retenção Média (Subordinada)", "Alto Alinhamento (Skin in the Game)"]
+        skin_val = st.selectbox("Alinhamento Originador x Investidor", skin_opt)
+        scores['conflitos'] = map_qualitativo(skin_val, skin_opt, [40, 70, 100])
+
+        st.markdown('<p class="header-style">9. Qualidade dos Prestadores</p>', unsafe_allow_html=True)
+        serv_opt = ["Genéricos/Internos", "Renomados e Independentes"]
+        serv_val = st.radio("Agente Fiduciário / Securitizadora", serv_opt)
+        scores['prestadores'] = map_qualitativo(serv_val, serv_opt, [50, 100])
+
+# --- ABA 2: Financeiro e O "Garfo" do Ativo (Pilar 4) ---
+with tab_fin:
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown('<p class="header-style">3. Saúde Financeira (Corporativa/SPE)</p>', unsafe_allow_html=True)
+        div_liq_ebitda = st.number_input("Dívida Líquida / EBITDA (x)", 0.0, 15.0, 2.5)
+        
+        # Score Financeiro Inverso (Quanto menor a alavancagem, maior a nota)
+        if div_liq_ebitda < 1.0: s_fin = 100
+        elif div_liq_ebitda < 2.5: s_fin = 85
+        elif div_liq_ebitda < 4.0: s_fin = 60
+        else: s_fin = 30
+        
+        liquidez_corr = st.number_input("Índice de Liquidez Corrente", 0.0, 5.0, 1.5)
+        if liquidez_corr > 1.5: s_fin += 0 # Bonus já incluso
+        elif liquidez_corr < 1.0: s_fin -= 20 # Penalidade
+        
+        scores['financeiro'] = max(0, min(100, s_fin))
+
+    with col2:
+        st.markdown(f'<p class="header-style">4. Risco do Ativo: {tipo_ativo}</p>', unsafe_allow_html=True)
+        
+        s_ativo = 0
+        if tipo_ativo == "Desenvolvimento Imobiliário (Projeto)":
+            # Análise de Desenvolvimento
+            ivv = st.slider("IVV (Velocidade de Vendas Recente) %", 0, 100, 30)
+            poc_fisico = st.slider("Avanço Físico (POC) %", 0, 100, 40)
+            custo_coberto = st.radio("Custo da Obra Coberto?", ["Parcialmente", "Sim (Equity + Finam)"])
+            
+            s_ativo = (ivv * 0.4) + (poc_fisico * 0.4)
+            if custo_coberto == "Sim (Equity + Finam)": s_ativo += 20
+            
+        else:
+            # Análise de Carteira/Pulverizado
+            ltv_medio = st.slider("LTV Médio da Carteira %", 0, 100, 50)
+            inadimplencia = st.number_input("Inadimplência Histórica (>90 dias) %", 0.0, 50.0, 2.0)
+            concentracao = st.selectbox("Concentração (Maiores Devedores)", ["Alta", "Média", "Baixa/Pulverizada"])
+            
+            # Score Carteira
+            s_ativo = 100 - ltv_medio # Base
+            s_ativo -= (inadimplencia * 5) # Penalidade pesada por inadimplência
+            if concentracao == "Alta": s_ativo -= 20
+            elif concentracao == "Baixa/Pulverizada": s_ativo += 10
+            
+        scores['ativo_especifico'] = max(0, min(100, s_ativo))
+
+# --- ABA 3: Estrutura, Reforço e Garantias ---
+with tab_estrut:
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown('<p class="header-style">5. Estrutura de Capital</p>', unsafe_allow_html=True)
+        subordinada = st.slider("% de Subordinação (Júnior/Mez)", 0, 50, 10)
+        waterfall = st.checkbox("Cascata de Pagamentos Clara?", value=True)
+        
+        s_est = min(100, subordinada * 3) # 30% subordinação = quase 90 pts
+        if not waterfall: s_est = s_est / 2
+        scores['estrutura_capital'] = s_est
+
+        st.markdown('<p class="header-style">6. Mecanismos de Reforço</p>', unsafe_allow_html=True)
+        reserva = st.number_input("Fundo de Reserva (nº PMTs)", 0, 12, 3)
+        scores['reforco'] = min(100, reserva * 20) # 5 PMTs = 100 pts
+
+    with col2:
+        st.markdown('<p class="header-style">7. Qualidade das Garantias</p>', unsafe_allow_html=True)
+        tipo_garantia = st.selectbox("Tipo de Garantia", ["Aval/Fiança", "Hipoteca", "Alienação Fiduciária"])
+        liquidez_garantia = st.select_slider("Liquidez do Imóvel/Garantia", ["Baixa", "Média", "Alta"])
+        
+        s_gar = 0
+        if tipo_garantia == "Alienação Fiduciária": s_gar += 60
+        elif tipo_garantia == "Hipoteca": s_gar += 30
+        
+        if liquidez_garantia == "Alta": s_gar += 40
+        elif liquidez_garantia == "Média": s_gar += 20
+        
+        scores['garantias'] = s_gar
+
+    with col3:
+        st.markdown('<p class="header-style">10. Robustez Contratual</p>', unsafe_allow_html=True)
+        covenants = st.multiselect("Covenants Financeiros Presentes", ["Dívida Liq/EBITDA", "ICSD Mínimo", "LTV Máximo", "Cross Default"])
+        scores['contratual'] = min(100, len(covenants) * 25)
+
+# --- ABA RESULTADO ---
+with tab_res:
+    # Calcular
+    final_score = calcular_rating_final(scores)
+    grade, color = get_grade(final_score)
+    
+    col_top1, col_top2 = st.columns([1, 2])
+    
+    with col_top1:
+        st.markdown(f"""
+        <div style="background-color: {color}20; padding: 20px; border-radius: 10px; border-left: 10px solid {color}; text-align: center;">
+            <h3 style="margin:0; color: #333;">Rating Calculado</h3>
+            <h1 style="font-size: 70px; margin:0; color: {color};">{grade}</h1>
+            <p style="font-size: 18px;">Score Global: <b>{final_score:.1f}</b> / 100</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Botão de Download
+        df_export = pd.DataFrame([scores])
+        st.download_button(
+            label="📥 Exportar Dados da Análise (CSV)",
+            data=df_export.to_csv(index=False).encode('utf-8'),
+            file_name=f'rating_{nome_emissor.replace(" ", "_")}.csv',
+            mime='text/csv'
+        )
+
+    with col_top2:
+        # Gráfico de Radar (Spider Chart)
+        # Agrupando categorias para o gráfico não ficar ilegível
+        radar_data = {
+            'Institucional': (scores['governanca'] + scores['historico'] + scores['conflitos'])/3,
+            'Financeiro': scores['financeiro'],
+            'Risco Ativo': scores['ativo_especifico'],
+            'Estrutura': (scores['estrutura_capital'] + scores['reforco'])/2,
+            'Garantias': scores['garantias'],
+            'Jurídico': (scores['contratual'] + scores['prestadores'])/2
+        }
+        
+        fig = go.Figure(data=go.Scatterpolar(
+            r=list(radar_data.values()),
+            theta=list(radar_data.keys()),
+            fill='toself',
+            name=nome_emissor
+        ))
+
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=False,
+            title="Radar de Risco da Operação"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    
+    # Detalhamento Tabular
+    st.subheader("Detalhamento por Pilar")
+    df_detalhe = pd.DataFrame(list(scores.items()), columns=['Categoria', 'Score (0-100)'])
+    
+    # Formatação visual da tabela
+    st.dataframe(
+        df_detalhe.style.background_gradient(cmap='RdYlGn', vmin=0, vmax=100),
+        use_container_width=True
+    )
